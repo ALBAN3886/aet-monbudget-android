@@ -26,7 +26,7 @@ public class MainActivity extends AppCompatActivity {
 
     // Adresse de l'app web hébergée (GitHub Pages).
     // Remplace cette URL par celle de ton site si elle change.
-    private static final String APP_URL = "https://alban3886.github.io/togoshe/";
+    private static final String APP_URL = "https://alban3886.github.io/togosheets-pro/";
 
     private WebView webView;
     private SwipeRefreshLayout swipeRefresh;
@@ -61,7 +61,7 @@ public class MainActivity extends AppCompatActivity {
     private void setupWebView() {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);          // requis pour localStorage / Firebase
+        settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
@@ -79,7 +79,6 @@ public class MainActivity extends AppCompatActivity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String host = uri.getHost();
-                // Garde la navigation interne dans la WebView ; ouvre le reste à l'extérieur si besoin plus tard.
                 if (host != null && host.contains("alban3886.github.io")) {
                     return false;
                 }
