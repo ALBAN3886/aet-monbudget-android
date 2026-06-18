@@ -1,0 +1,3 @@
+#!/bin/sh
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+exec gradle "$@"
