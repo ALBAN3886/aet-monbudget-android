@@ -1,1 +1,4 @@
-
+<resources>
+    <style name="Theme.MonBudget" parent="Theme.AppCompat.Light.NoActionBar">
+    </style>
+</resources>
