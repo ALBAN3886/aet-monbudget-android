@@ -1,48 +1,33 @@
 name: Build AET MonBudget APK
-
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
-
+    branches: [ main, principal ]
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout du dépôt
-        uses: actions/checkout@v4
-
-      - name: Installer Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-java@v3
         with:
-          distribution: 'temurin'
           java-version: '17'
-
-      - name: Installer Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Générer le Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.7
-
-      - name: Restaurer le keystore depuis le secret
-        run: |
-          mkdir -p keystore
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore/aet-release.jks
-
-      - name: Donner les droits d'exécution à Gradle
-        run: chmod +x ./gradlew
-
-      - name: Compiler l'APK signé (release)
+          distribution: 'temurin'
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Build APK
+        run: gradle assembleRelease
         env:
-          KEYSTORE_PATH: ../keystore/aet-release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
-
-      - name: Publier l'APK comme artefact téléchargeable
-        uses: actions/upload-artifact@v4
+      - name: Sign APK
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > aet-release.jks
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore aet-release.jks \
+            -storepass ${{ secrets.KEYSTORE_PASSWORD }} \
+            -keypass ${{ secrets.KEY_PASSWORD }} \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            ${{ secrets.KEY_ALIAS }}
+      - uses: actions/upload-artifact@v4
         with:
-          name: AET-MonBudget-release
-          path: app/build/outputs/apk/release/app-release.apk
+          name: app-release
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
