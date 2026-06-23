@@ -5,7 +5,10 @@ import android.annotation.SuppressLint;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -18,9 +21,13 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.biometric.BiometricManager;
+import androidx.biometric.BiometricPrompt;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+
+import java.util.concurrent.Executor;
 
 /**
  * AET MonBudget - Activité principale.
@@ -82,6 +89,10 @@ public class MainActivity extends AppCompatActivity {
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
+
+        // Pont JavaScript <-> Java pour l'empreinte digitale native.
+        // Accessible depuis la page web via window.AndroidBiometric.*
+        webView.addJavascriptInterface(new BiometricBridge(), "AndroidBiometric");
 
         webView.setWebChromeClient(new WebChromeClient() {
             // Appelée quand la page web (getUserMedia) demande l'accès à la caméra/micro.
@@ -172,4 +183,77 @@ public class MainActivity extends AppCompatActivity {
             super.onBackPressed();
         }
     }
+
+    /**
+     * Pont exposé au JavaScript sous le nom "AndroidBiometric".
+     * Utilise androidx.biometric (BiometricPrompt) pour afficher le vrai
+     * dialogue d'empreinte/visage natif d'Android, et renvoie le résultat
+     * au JavaScript en appelant window.onBiometricResult(success, message)
+     * dans la page web.
+     *
+     * Côté JS (index.html), utilisation typique :
+     *   if (window.AndroidBiometric && window.AndroidBiometric.isAvailable()) {
+     *     window.onBiometricResult = function(success, message) { ... };
+     *     window.AndroidBiometric.authenticate('Déverrouiller AET MonBudget');
+     *   }
+     */
+    private class BiometricBridge {
+
+        @JavascriptInterface
+        public boolean isAvailable() {
+            BiometricManager manager = BiometricManager.from(MainActivity.this);
+            int result = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK
+                    | BiometricManager.Authenticators.BIOMETRIC_STRONG);
+            return result == BiometricManager.BIOMETRIC_SUCCESS;
+        }
+
+        @JavascriptInterface
+        public void authenticate(String promptTitle) {
+            // BiometricPrompt doit être lancé sur le thread principal (UI thread).
+            new Handler(Looper.getMainLooper()).post(() -> showBiometricPrompt(promptTitle));
+        }
     }
+
+    private void showBiometricPrompt(String promptTitle) {
+        Executor executor = ContextCompat.getMainExecutor(this);
+        BiometricPrompt biometricPrompt = new BiometricPrompt(this, executor,
+                new BiometricPrompt.AuthenticationCallback() {
+                    @Override
+                    public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                        super.onAuthenticationSucceeded(result);
+                        notifyJs(true, "success");
+                    }
+
+                    @Override
+                    public void onAuthenticationError(int errorCode, CharSequence errString) {
+                        super.onAuthenticationError(errorCode, errString);
+                        notifyJs(false, errString != null ? errString.toString() : "error");
+                    }
+
+                    @Override
+                    public void onAuthenticationFailed() {
+                        super.onAuthenticationFailed();
+                        // Empreinte non reconnue : on ne notifie pas tout de suite,
+                        // BiometricPrompt laisse l'utilisateur réessayer automatiquement.
+                    }
+                });
+
+        BiometricPrompt.PromptInfo promptInfo = new BiometricPrompt.PromptInfo.Builder()
+                .setTitle(promptTitle != null ? promptTitle : "Authentification")
+                .setNegativeButtonText("Annuler")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK
+                        | BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                .build();
+
+        biometricPrompt.authenticate(promptInfo);
+    }
+
+    // Transmet le résultat de l'authentification biométrique au JavaScript,
+    // en appelant window.onBiometricResult(success, message) dans la page.
+    private void notifyJs(boolean success, String message) {
+        String safeMessage = message == null ? "" : message.replace("'", "\\'");
+        String js = "if (typeof window.onBiometricResult === 'function') { "
+                + "window.onBiometricResult(" + success + ", '" + safeMessage + "'); }";
+        runOnUiThread(() -> webView.evaluateJavascript(js, null));
+    }
+}
