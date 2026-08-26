@@ -2,13 +2,20 @@ package com.aet.monbudget;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -19,17 +26,31 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.concurrent.Executor;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * AET MonBudget - Activité principale.
@@ -41,6 +62,12 @@ public class MainActivity extends AppCompatActivity {
     // Adresse de l'app web hébergée (GitHub Pages).
     // Remplace cette URL par celle de ton site si elle change.
     private static final String APP_URL = "https://alban3886.github.io/togosheets-pro/";
+
+    // API GitHub publique pour connaître la dernière version publiée (releases).
+    private static final String UPDATE_CHECK_URL =
+            "https://api.github.com/repos/ALBAN3886/aet-monbudget-android/releases/latest";
+    private static final String UPDATE_APK_FILENAME = "togosheets-update.apk";
+    private static final int REQUEST_INSTALL_PERMISSION_CODE = 2001;
 
     // Code utilisé pour identifier la réponse de la demande de permission caméra
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 1001;
@@ -54,6 +81,23 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout loadingScreen;
     private LinearLayout offlineScreen;
 
+    // ── Mise à jour intégrée ──
+    private LinearLayout updateBanner;
+    private TextView updateText;
+    private Button updateButton;
+    private ImageButton updateDismiss;
+    private String pendingApkUrl;
+    private long updateDownloadId = -1;
+    private final BroadcastReceiver downloadReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+            if (id == updateDownloadId) {
+                installDownloadedApk();
+            }
+        }
+    };
+
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,6 +110,19 @@ public class MainActivity extends AppCompatActivity {
         offlineScreen = findViewById(R.id.offlineScreen);
         Button retryButton = findViewById(R.id.retryButton);
 
+        updateBanner = findViewById(R.id.updateBanner);
+        updateText = findViewById(R.id.updateText);
+        updateButton = findViewById(R.id.updateButton);
+        updateDismiss = findViewById(R.id.updateDismiss);
+        updateDismiss.setOnClickListener(v -> updateBanner.setVisibility(View.GONE));
+
+        IntentFilter downloadFilter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(downloadReceiver, downloadFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(downloadReceiver, downloadFilter);
+        }
+
         setupWebView();
 
         retryButton.setOnClickListener(v -> {
@@ -77,6 +134,7 @@ public class MainActivity extends AppCompatActivity {
         swipeRefresh.setOnRefreshListener(() -> webView.reload());
 
         webView.loadUrl(APP_URL);
+        checkForUpdate();
     }
 
     private void setupWebView() {
@@ -183,6 +241,168 @@ public class MainActivity extends AppCompatActivity {
                 pendingWebPermissionRequest.deny();
             }
             pendingWebPermissionRequest = null;
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        try { unregisterReceiver(downloadReceiver); } catch (IllegalArgumentException ignored) {}
+    }
+
+    // ── Mise à jour intégrée : vérification, téléchargement, installation ──
+
+    /** Vérifie en arrière-plan si une nouvelle version est publiée sur GitHub Releases. */
+    private void checkForUpdate() {
+        new Thread(() -> {
+            try {
+                int localVersion = getPackageManager()
+                        .getPackageInfo(getPackageName(), 0).versionCode;
+
+                URL url = new URL(UPDATE_CHECK_URL);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestProperty("Accept", "application/vnd.github+json");
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+
+                if (conn.getResponseCode() != 200) { conn.disconnect(); return; }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                conn.disconnect();
+
+                JSONObject release = new JSONObject(sb.toString());
+                String tagName = release.optString("tag_name", "");
+
+                // Le tag est de la forme "v1.0.<numéro de build>" : on compare ce numéro
+                // au versionCode local (les deux viennent du même compteur CI).
+                Matcher m = Pattern.compile("(\\d+)$").matcher(tagName);
+                if (!m.find()) return;
+                int remoteVersion = Integer.parseInt(m.group(1));
+
+                if (remoteVersion <= localVersion) return; // déjà à jour
+
+                // Trouver l'URL de téléchargement de l'APK dans les assets de la release
+                JSONArray assets = release.optJSONArray("assets");
+                String apkUrl = null;
+                if (assets != null) {
+                    for (int i = 0; i < assets.length(); i++) {
+                        JSONObject asset = assets.getJSONObject(i);
+                        String name = asset.optString("name", "");
+                        if (name.toLowerCase().endsWith(".apk")) {
+                            apkUrl = asset.optString("browser_download_url", null);
+                            break;
+                        }
+                    }
+                }
+                if (apkUrl == null) return;
+
+                final String finalApkUrl = apkUrl;
+                final String versionLabel = tagName;
+                runOnUiThread(() -> showUpdateBanner(versionLabel, finalApkUrl));
+
+            } catch (Exception e) {
+                // Échec silencieux : un problème réseau ne doit jamais gêner l'utilisation normale de l'app.
+            }
+        }).start();
+    }
+
+    private void showUpdateBanner(String versionLabel, String apkUrl) {
+        pendingApkUrl = apkUrl;
+        updateText.setText("Nouvelle version disponible (" + versionLabel + ")");
+        updateButton.setText("Mettre à jour");
+        updateButton.setEnabled(true);
+        updateButton.setOnClickListener(v -> startApkDownload());
+        updateBanner.setVisibility(View.VISIBLE);
+    }
+
+    /** Télécharge l'APK directement dans l'app (aucune sortie vers un navigateur). */
+    private void startApkDownload() {
+        if (pendingApkUrl == null) return;
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(pendingApkUrl));
+            request.setTitle("Mise à jour TogoSheets");
+            request.setDescription("Téléchargement en cours…");
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, UPDATE_APK_FILENAME);
+            request.setMimeType("application/vnd.android.package-archive");
+
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            // On efface un éventuel ancien téléchargement resté au même nom.
+            File existing = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), UPDATE_APK_FILENAME);
+            if (existing.exists()) existing.delete();
+
+            updateDownloadId = dm.enqueue(request);
+            updateButton.setEnabled(false);
+            updateButton.setText("Téléchargement…");
+        } catch (Exception e) {
+            Toast.makeText(this, "Impossible de démarrer le téléchargement.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Appelé quand le téléchargement de l'APK est terminé : vérifie puis lance l'installation. */
+    private void installDownloadedApk() {
+        DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        DownloadManager.Query query = new DownloadManager.Query().setFilterById(updateDownloadId);
+        android.database.Cursor cursor = dm.query(query);
+        boolean success = false;
+        if (cursor != null) {
+            if (cursor.moveToFirst()) {
+                int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                if (statusIdx >= 0 && cursor.getInt(statusIdx) == DownloadManager.STATUS_SUCCESSFUL) {
+                    success = true;
+                }
+            }
+            cursor.close();
+        }
+
+        runOnUiThread(() -> {
+            updateButton.setEnabled(true);
+            updateButton.setText("Mettre à jour");
+        });
+
+        if (!success) {
+            runOnUiThread(() -> Toast.makeText(this, "Échec du téléchargement. Réessaie.", Toast.LENGTH_SHORT).show());
+            return;
+        }
+
+        // Android 8+ : l'utilisateur doit autoriser l'installation depuis cette app.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+            runOnUiThread(() -> {
+                Toast.makeText(this, "Autorise l'installation pour continuer la mise à jour.", Toast.LENGTH_LONG).show();
+                Intent settingsIntent = new Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(settingsIntent, REQUEST_INSTALL_PERMISSION_CODE);
+            });
+            return;
+        }
+
+        launchApkInstall();
+    }
+
+    private void launchApkInstall() {
+        File apkFile = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), UPDATE_APK_FILENAME);
+        if (!apkFile.exists()) return;
+        Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apkFile);
+        Intent installIntent = new Intent(Intent.ACTION_VIEW);
+        installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+        installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(installIntent);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_INSTALL_PERMISSION_CODE) {
+            // Que la permission ait été accordée ou non, on retente : si elle est accordée,
+            // l'installation démarre ; sinon rien ne se passe (l'utilisateur pourra réessayer).
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
+                launchApkInstall();
+            }
         }
     }
 
