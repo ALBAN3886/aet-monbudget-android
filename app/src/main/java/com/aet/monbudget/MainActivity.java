@@ -2,6 +2,8 @@ package com.aet.monbudget;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
@@ -133,10 +135,19 @@ public class MainActivity extends AppCompatActivity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String host = uri.getHost();
+                // Le site officiel reste dans la WebView de l'app.
                 if (host != null && host.contains("alban3886.github.io")) {
                     return false;
                 }
-                return false;
+                // Tout le reste (WhatsApp, tel:, mailto:, sites de paiement, etc.)
+                // s'ouvre avec l'application système appropriée, pas dans la WebView.
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                    startActivity(intent);
+                } catch (ActivityNotFoundException e) {
+                    // Aucune app ne peut ouvrir ce lien : on ne fait rien plutôt que de planter.
+                }
+                return true;
             }
 
             @Override
