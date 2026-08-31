@@ -19,7 +19,9 @@ import android.provider.Settings;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebChromeClient.FileChooserParams;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -75,6 +77,8 @@ public class MainActivity extends AppCompatActivity {
     // Mémorise la demande de permission caméra faite par la page web (WebView),
     // pour pouvoir y répondre une fois que l'utilisateur a répondu au popup Android.
     private PermissionRequest pendingWebPermissionRequest;
+    private ValueCallback<Uri[]> pendingFileChooserCallback;
+    private static final int REQUEST_FILE_CHOOSER_CODE = 2002;
 
     private WebView webView;
     private SwipeRefreshLayout swipeRefresh;
@@ -184,6 +188,26 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPermissionRequestCanceled(PermissionRequest request) {
                 pendingWebPermissionRequest = null;
+            }
+
+            // Appelée quand la page web déclenche un <input type="file"> (ex: "Changer la photo").
+            // Sans ceci, taper sur ce bouton ne fait RIEN dans la WebView Android — le sélecteur
+            // de galerie ne s'ouvre jamais, même si tout fonctionne normalement sur le web.
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                if (pendingFileChooserCallback != null) {
+                    pendingFileChooserCallback.onReceiveValue(null);
+                    pendingFileChooserCallback = null;
+                }
+                pendingFileChooserCallback = filePathCallback;
+                try {
+                    Intent intent = fileChooserParams.createIntent();
+                    startActivityForResult(intent, REQUEST_FILE_CHOOSER_CODE);
+                } catch (ActivityNotFoundException e) {
+                    pendingFileChooserCallback = null;
+                    return false;
+                }
+                return true;
             }
         });
 
@@ -403,6 +427,14 @@ public class MainActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
                 launchApkInstall();
             }
+        } else if (requestCode == REQUEST_FILE_CHOOSER_CODE) {
+            if (pendingFileChooserCallback == null) return;
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                results = new Uri[]{ data.getData() };
+            }
+            pendingFileChooserCallback.onReceiveValue(results);
+            pendingFileChooserCallback = null;
         }
     }
 
