@@ -48,6 +48,19 @@
 
     </LinearLayout>
 
+    <!-- Bouton fixe permanent : vérifier les mises à jour manuellement, à tout moment -->
+    <Button
+        android:id="@+id/checkUpdateBtn"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:background="@android:drawable/ic_popup_sync"
+        android:backgroundTint="#2563eb"
+        android:elevation="6dp"
+        android:contentDescription="Vérifier les mises à jour" />
+
     <!-- Bandeau de mise à jour : flotte en bas, au-dessus de tout, sans perturber le reste -->
     <LinearLayout
         android:id="@+id/updateBanner"
