@@ -120,6 +120,12 @@ public class MainActivity extends AppCompatActivity {
         updateDismiss = findViewById(R.id.updateDismiss);
         updateDismiss.setOnClickListener(v -> updateBanner.setVisibility(View.GONE));
 
+        Button checkUpdateBtn = findViewById(R.id.checkUpdateBtn);
+        checkUpdateBtn.setOnClickListener(v -> {
+            Toast.makeText(this, "Vérification en cours…", Toast.LENGTH_SHORT).show();
+            checkForUpdate(true);
+        });
+
         IntentFilter downloadFilter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(downloadReceiver, downloadFilter, Context.RECEIVER_EXPORTED);
@@ -138,7 +144,7 @@ public class MainActivity extends AppCompatActivity {
         swipeRefresh.setOnRefreshListener(() -> webView.reload());
 
         webView.loadUrl(APP_URL);
-        checkForUpdate();
+        checkForUpdate(false);
     }
 
     private void setupWebView() {
@@ -277,7 +283,11 @@ public class MainActivity extends AppCompatActivity {
     // ── Mise à jour intégrée : vérification, téléchargement, installation ──
 
     /** Vérifie en arrière-plan si une nouvelle version est publiée sur GitHub Releases. */
-    private void checkForUpdate() {
+    /** Vérifie en arrière-plan si une nouvelle version est publiée sur GitHub Releases.
+     *  @param showFeedback si true (vérification manuelle via le bouton), affiche un message
+     *                      même quand il n'y a rien de nouveau ou en cas d'erreur réseau.
+     *                      Si false (vérification automatique au démarrage), reste silencieux. */
+    private void checkForUpdate(boolean showFeedback) {
         new Thread(() -> {
             try {
                 int localVersion = getPackageManager()
@@ -289,7 +299,12 @@ public class MainActivity extends AppCompatActivity {
                 conn.setConnectTimeout(8000);
                 conn.setReadTimeout(8000);
 
-                if (conn.getResponseCode() != 200) { conn.disconnect(); return; }
+                if (conn.getResponseCode() != 200) {
+                    conn.disconnect();
+                    if (showFeedback) runOnUiThread(() ->
+                        Toast.makeText(this, "Impossible de vérifier pour le moment.", Toast.LENGTH_SHORT).show());
+                    return;
+                }
 
                 BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
                 StringBuilder sb = new StringBuilder();
@@ -304,10 +319,18 @@ public class MainActivity extends AppCompatActivity {
                 // Le tag est de la forme "v1.0.<numéro de build>" : on compare ce numéro
                 // au versionCode local (les deux viennent du même compteur CI).
                 Matcher m = Pattern.compile("(\\d+)$").matcher(tagName);
-                if (!m.find()) return;
+                if (!m.find()) {
+                    if (showFeedback) runOnUiThread(() ->
+                        Toast.makeText(this, "Impossible de vérifier pour le moment.", Toast.LENGTH_SHORT).show());
+                    return;
+                }
                 int remoteVersion = Integer.parseInt(m.group(1));
 
-                if (remoteVersion <= localVersion) return; // déjà à jour
+                if (remoteVersion <= localVersion) {
+                    if (showFeedback) runOnUiThread(() ->
+                        Toast.makeText(this, "Tu es déjà à jour ✓", Toast.LENGTH_SHORT).show());
+                    return; // déjà à jour
+                }
 
                 // Trouver l'URL de téléchargement de l'APK dans les assets de la release
                 JSONArray assets = release.optJSONArray("assets");
@@ -322,14 +345,20 @@ public class MainActivity extends AppCompatActivity {
                         }
                     }
                 }
-                if (apkUrl == null) return;
+                if (apkUrl == null) {
+                    if (showFeedback) runOnUiThread(() ->
+                        Toast.makeText(this, "Impossible de vérifier pour le moment.", Toast.LENGTH_SHORT).show());
+                    return;
+                }
 
                 final String finalApkUrl = apkUrl;
                 final String versionLabel = tagName;
                 runOnUiThread(() -> showUpdateBanner(versionLabel, finalApkUrl));
 
             } catch (Exception e) {
-                // Échec silencieux : un problème réseau ne doit jamais gêner l'utilisation normale de l'app.
+                // Échec silencieux au démarrage ; message si vérification manuelle.
+                if (showFeedback) runOnUiThread(() ->
+                    Toast.makeText(this, "Impossible de vérifier pour le moment.", Toast.LENGTH_SHORT).show());
             }
         }).start();
     }
