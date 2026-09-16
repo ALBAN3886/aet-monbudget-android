@@ -2,6 +2,7 @@ package com.aet.monbudget;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
@@ -85,7 +86,8 @@ public class MainActivity extends AppCompatActivity {
     // pour pouvoir y répondre une fois que l'utilisateur a répondu au popup Android.
     private PermissionRequest pendingWebPermissionRequest;
     private ValueCallback<Uri[]> pendingFileChooserCallback;
-    private static final int REQUEST_FILE_CHOOSER_CODE = 2002;
+    private static final int REQUEST_GALLERY_CODE = 2003;
+    private static final int REQUEST_CAMERA_CODE = 2004;
     // Chemin du fichier temporaire où la photo prise par l'appareil photo est enregistrée
     // (nécessaire car, contrairement à la galerie, l'appareil photo ne renvoie pas
     // l'image directement dans le résultat de l'activité — il faut lui donner un
@@ -212,9 +214,10 @@ public class MainActivity extends AppCompatActivity {
             // Sans ceci, taper sur ce bouton ne fait RIEN dans la WebView Android — le sélecteur
             // de galerie ne s'ouvre jamais, même si tout fonctionne normalement sur le web.
             //
-            // On propose ICI un choix combiné Galerie + Appareil photo. Pour l'appareil photo,
-            // on doit fournir à l'avance un fichier de destination (via FileProvider) : sans ça,
-            // la photo est bien prise mais ne revient jamais dans la WebView (bug classique).
+            // Galerie et appareil photo sont gérés comme deux chemins bien séparés (au lieu
+            // d'un unique sélecteur système combiné) : certains téléphones renvoient mal le
+            // résultat de la galerie quand elle est combinée avec un appareil photo dans le
+            // même chooser. Séparer les deux est plus fiable sur l'ensemble des appareils.
             @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
                 if (pendingFileChooserCallback != null) {
@@ -224,36 +227,28 @@ public class MainActivity extends AppCompatActivity {
                 pendingFileChooserCallback = filePathCallback;
                 cameraPhotoPath = null;
 
-                // Intent galerie (comportement existant, inchangé)
-                Intent galleryIntent = fileChooserParams.createIntent();
+                boolean hasCameraPermission = ContextCompat.checkSelfPermission(
+                        MainActivity.this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
 
-                // Intent appareil photo, avec un vrai fichier de destination
-                Intent cameraIntent = null;
-                if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
-                        == PackageManager.PERMISSION_GRANTED) {
-                    try {
-                        File photoFile = createTempImageFile();
-                        cameraPhotoPath = photoFile.getAbsolutePath();
-                        Uri photoUri = FileProvider.getUriForFile(
-                                MainActivity.this, getPackageName() + ".fileprovider", photoFile);
-                        cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                        cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
-                        cameraIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                    } catch (IOException e) {
-                        cameraPhotoPath = null;
-                    }
+                if (!hasCameraPermission) {
+                    openGalleryPicker();
+                    return true;
                 }
 
-                try {
-                    Intent chooser = Intent.createChooser(galleryIntent, "Ajouter une photo");
-                    if (cameraIntent != null) {
-                        chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{ cameraIntent });
-                    }
-                    startActivityForResult(chooser, REQUEST_FILE_CHOOSER_CODE);
-                } catch (ActivityNotFoundException e) {
-                    pendingFileChooserCallback = null;
-                    return false;
-                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Ajouter une photo")
+                        .setItems(new String[]{ "Prendre une photo", "Choisir depuis la galerie" },
+                                (dialog, which) -> {
+                                    if (which == 0) openCameraCapture();
+                                    else openGalleryPicker();
+                                })
+                        .setOnCancelListener(dialog -> {
+                            if (pendingFileChooserCallback != null) {
+                                pendingFileChooserCallback.onReceiveValue(null);
+                                pendingFileChooserCallback = null;
+                            }
+                        })
+                        .show();
                 return true;
             }
         });
@@ -488,6 +483,43 @@ public class MainActivity extends AppCompatActivity {
         startActivity(installIntent);
     }
 
+    // Ouvre le sélecteur de galerie seul (une ou plusieurs photos).
+    private void openGalleryPicker() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("image/*");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        try {
+            startActivityForResult(intent, REQUEST_GALLERY_CODE);
+        } catch (ActivityNotFoundException e) {
+            if (pendingFileChooserCallback != null) {
+                pendingFileChooserCallback.onReceiveValue(null);
+                pendingFileChooserCallback = null;
+            }
+        }
+    }
+
+    // Ouvre l'appareil photo seul, avec un fichier de destination préparé à l'avance
+    // (obligatoire : sans ça, la photo est bien prise mais ne revient jamais dans la WebView).
+    private void openCameraCapture() {
+        try {
+            File photoFile = createTempImageFile();
+            cameraPhotoPath = photoFile.getAbsolutePath();
+            Uri photoUri = FileProvider.getUriForFile(
+                    MainActivity.this, getPackageName() + ".fileprovider", photoFile);
+            Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+            cameraIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            startActivityForResult(cameraIntent, REQUEST_CAMERA_CODE);
+        } catch (IOException | ActivityNotFoundException e) {
+            cameraPhotoPath = null;
+            if (pendingFileChooserCallback != null) {
+                pendingFileChooserCallback.onReceiveValue(null);
+                pendingFileChooserCallback = null;
+            }
+        }
+    }
+
     // Crée un fichier vide dans le cache de l'app pour que l'appareil photo
     // sache où enregistrer la photo prise (obligatoire pour WebView + caméra).
     private File createTempImageFile() throws IOException {
@@ -506,23 +538,33 @@ public class MainActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
                 launchApkInstall();
             }
-        } else if (requestCode == REQUEST_FILE_CHOOSER_CODE) {
+        } else if (requestCode == REQUEST_GALLERY_CODE) {
             if (pendingFileChooserCallback == null) return;
-
             Uri[] results = null;
-            if (resultCode == RESULT_OK) {
-                if (data != null && (data.getData() != null || data.getClipData() != null)) {
-                    // Cas galerie : un ou plusieurs fichiers sélectionnés normalement.
-                    results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
-                } else if (cameraPhotoPath != null) {
-                    // Cas appareil photo : l'intent de retour est vide (normal), la photo
-                    // est à l'emplacement qu'on avait préparé à l'avance.
-                    File photoFile = new File(cameraPhotoPath);
-                    if (photoFile.exists() && photoFile.length() > 0) {
-                        Uri photoUri = FileProvider.getUriForFile(
-                                MainActivity.this, getPackageName() + ".fileprovider", photoFile);
-                        results = new Uri[]{ photoUri };
+            if (resultCode == RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    // Plusieurs photos sélectionnées
+                    int count = data.getClipData().getItemCount();
+                    results = new Uri[count];
+                    for (int i = 0; i < count; i++) {
+                        results[i] = data.getClipData().getItemAt(i).getUri();
                     }
+                } else if (data.getData() != null) {
+                    // Une seule photo sélectionnée
+                    results = new Uri[]{ data.getData() };
+                }
+            }
+            pendingFileChooserCallback.onReceiveValue(results);
+            pendingFileChooserCallback = null;
+        } else if (requestCode == REQUEST_CAMERA_CODE) {
+            if (pendingFileChooserCallback == null) return;
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && cameraPhotoPath != null) {
+                File photoFile = new File(cameraPhotoPath);
+                if (photoFile.exists() && photoFile.length() > 0) {
+                    Uri photoUri = FileProvider.getUriForFile(
+                            MainActivity.this, getPackageName() + ".fileprovider", photoFile);
+                    results = new Uri[]{ photoUri };
                 }
             }
             pendingFileChooserCallback.onReceiveValue(results);
