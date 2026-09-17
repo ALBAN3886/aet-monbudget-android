@@ -655,8 +655,13 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void googleSignIn() {
             runOnUiThread(() -> {
-                Intent signInIntent = googleSignInClient.getSignInIntent();
-                startActivityForResult(signInIntent, REQUEST_GOOGLE_SIGNIN_CODE);
+                // Se déconnecte d'abord de la session Google mise en cache, pour forcer
+                // l'affichage du sélecteur de compte à chaque fois (sinon, avec un seul
+                // compte sur l'appareil, Android saute directement dessus sans rien demander).
+                googleSignInClient.signOut().addOnCompleteListener(task -> {
+                    Intent signInIntent = googleSignInClient.getSignInIntent();
+                    startActivityForResult(signInIntent, REQUEST_GOOGLE_SIGNIN_CODE);
+                });
             });
         }
     }
