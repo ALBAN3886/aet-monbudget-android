@@ -41,6 +41,12 @@ import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import com.google.android.gms.auth.api.signin.GoogleSignIn;
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
+import com.google.android.gms.auth.api.signin.GoogleSignInClient;
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions;
+import com.google.android.gms.common.api.ApiException;
 import androidx.core.content.FileProvider;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
@@ -88,6 +94,14 @@ public class MainActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> pendingFileChooserCallback;
     private static final int REQUEST_GALLERY_CODE = 2003;
     private static final int REQUEST_CAMERA_CODE = 2004;
+    private static final int REQUEST_GOOGLE_SIGNIN_CODE = 2005;
+
+    // ⚠️ Remplace par le "Web client ID" du projet Firebase
+    // (console Firebase → Authentication → Sign-in method → Google → Web SDK configuration).
+    // Ce n'est PAS un secret : c'est un identifiant public, comme la clé Firebase.
+    private static final String GOOGLE_WEB_CLIENT_ID = "1090226725870-9dcjtlqesaak57rpcs2sup6gcrun9ej6.apps.googleusercontent.com";
+
+    private GoogleSignInClient googleSignInClient;
     // Chemin du fichier temporaire où la photo prise par l'appareil photo est enregistrée
     // (nécessaire car, contrairement à la galerie, l'appareil photo ne renvoie pas
     // l'image directement dans le résultat de l'activité — il faut lui donner un
@@ -177,6 +191,18 @@ public class MainActivity extends AppCompatActivity {
         // Pont JavaScript <-> Java pour l'empreinte digitale native.
         // Accessible depuis la page web via window.AndroidBiometric.*
         webView.addJavascriptInterface(new BiometricBridge(), "AndroidBiometric");
+
+        // Pont JavaScript <-> Java pour la connexion Google native.
+        // Google bloque volontairement la connexion OAuth depuis une WebView (message
+        // "This browser or app may not be secure") — impossible à contourner en JS pur.
+        // On passe donc par le SDK Google Sign-In natif d'Android, qui renvoie ensuite
+        // un idToken à la page web via window.onGoogleSignInResult(...).
+        GoogleSignInOptions gso = new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestIdToken(GOOGLE_WEB_CLIENT_ID)
+                .requestEmail()
+                .build();
+        googleSignInClient = GoogleSignIn.getClient(this, gso);
+        webView.addJavascriptInterface(new GoogleAuthBridge(), "AndroidAuth");
 
         webView.setWebChromeClient(new WebChromeClient() {
             // Appelée quand la page web (getUserMedia) demande l'accès à la caméra/micro.
@@ -570,6 +596,14 @@ public class MainActivity extends AppCompatActivity {
             pendingFileChooserCallback.onReceiveValue(results);
             pendingFileChooserCallback = null;
             cameraPhotoPath = null;
+        } else if (requestCode == REQUEST_GOOGLE_SIGNIN_CODE) {
+            try {
+                GoogleSignInAccount account = GoogleSignIn.getSignedInAccountFromIntent(data)
+                        .getResult(ApiException.class);
+                notifyGoogleSignIn(true, account.getIdToken());
+            } catch (ApiException e) {
+                notifyGoogleSignIn(false, "Connexion Google annulée ou échouée (code " + e.getStatusCode() + ")");
+            }
         }
     }
 
@@ -610,6 +644,28 @@ public class MainActivity extends AppCompatActivity {
             // BiometricPrompt doit être lancé sur le thread principal (UI thread).
             new Handler(Looper.getMainLooper()).post(() -> showBiometricPrompt(promptTitle));
         }
+    }
+
+    /**
+     * Pont JavaScript <-> Java pour la connexion Google, appelable depuis la page web via :
+     *   if (window.AndroidAuth) { window.AndroidAuth.googleSignIn(); }
+     * Le résultat revient à la page web via window.onGoogleSignInResult(success, idTokenOuMessage).
+     */
+    private class GoogleAuthBridge {
+        @JavascriptInterface
+        public void googleSignIn() {
+            runOnUiThread(() -> {
+                Intent signInIntent = googleSignInClient.getSignInIntent();
+                startActivityForResult(signInIntent, REQUEST_GOOGLE_SIGNIN_CODE);
+            });
+        }
+    }
+
+    private void notifyGoogleSignIn(boolean success, String idTokenOrMessage) {
+        String safe = idTokenOrMessage == null ? "" : idTokenOrMessage.replace("'", "\\'");
+        String js = "if (typeof window.onGoogleSignInResult === 'function') { "
+                + "window.onGoogleSignInResult(" + success + ", '" + safe + "'); }";
+        runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
     private void showBiometricPrompt(String promptTitle) {
