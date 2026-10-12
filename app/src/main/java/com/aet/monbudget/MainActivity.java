@@ -77,7 +77,7 @@ public class MainActivity extends AppCompatActivity {
 
     // Adresse de l'app web hébergée (GitHub Pages).
     // Remplace cette URL par celle de ton site si elle change.
-    private static final String APP_URL = "https://alban3886.github.io/togosheets-pro/";
+    private static final String APP_URL = "https://budget.aet-alban.online/";
 
     // API GitHub publique pour connaître la dernière version publiée (releases).
     private static final String UPDATE_CHECK_URL =
@@ -286,7 +286,7 @@ public class MainActivity extends AppCompatActivity {
                 Uri uri = request.getUrl();
                 String host = uri.getHost();
                 // Le site officiel reste dans la WebView de l'app.
-                if (host != null && host.contains("alban3886.github.io")) {
+                if (host != null && (host.equals("aet-alban.online") || host.endsWith(".aet-alban.online") || host.equals("alban3886.github.io"))) {
                     return false;
                 }
                 // Tout le reste (WhatsApp, tel:, mailto:, sites de paiement, etc.)
