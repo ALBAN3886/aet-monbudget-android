@@ -27,6 +27,7 @@ import android.webkit.WebChromeClient.FileChooserParams;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
+import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -288,6 +289,11 @@ public class MainActivity extends AppCompatActivity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String host = uri.getHost();
+                // Marketplace : fenetre posee par-dessus, MonBudget reste charge dessous.
+                if (host != null && host.equals("market.aet-alban.online")) {
+                    openMarket(uri.toString());
+                    return true;
+                }
                 // Le site officiel reste dans la WebView de l'app.
                 if (host != null && (host.equals("aet-alban.online") || host.endsWith(".aet-alban.online") || host.equals("alban3886.github.io"))) {
                     return false;
@@ -614,8 +620,63 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private WebView marketView;
+
+    /** Ouvre Marketplace dans une WebView posee par-dessus MonBudget (sans passerelles JS). */
+    private void openMarket(String url) {
+        if (marketView != null) { marketView.loadUrl(url); return; }
+        marketView = new WebView(this);
+        WebSettings s = marketView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
+        s.setLoadWithOverviewMode(true);
+        s.setUseWideViewPort(true);
+        s.setSupportZoom(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        marketView.setBackgroundColor(0xFFFFFFFF);
+        marketView.setWebChromeClient(new WebChromeClient());
+        marketView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri u = request.getUrl();
+                String h = u.getHost();
+                if (h != null && h.equals("market.aet-alban.online")) return false;
+                if (h != null && (h.equals("aet-alban.online") || h.endsWith(".aet-alban.online"))) {
+                    view.post(() -> closeMarket());
+                    return true;
+                }
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, u));
+                } catch (ActivityNotFoundException e) {
+                    // Aucune app ne peut ouvrir ce lien.
+                }
+                return true;
+            }
+        });
+        ViewGroup root = findViewById(android.R.id.content);
+        root.addView(marketView, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        marketView.loadUrl(url);
+    }
+
+    private void closeMarket() {
+        if (marketView == null) return;
+        WebView v = marketView;
+        marketView = null;
+        ViewGroup parent = (ViewGroup) v.getParent();
+        if (parent != null) parent.removeView(v);
+        v.stopLoading();
+        v.destroy();
+    }
+
     @Override
     public void onBackPressed() {
+        if (marketView != null) {
+            if (marketView.canGoBack()) marketView.goBack();
+            else closeMarket();
+            return;
+        }
         if (webView.canGoBack()) {
             webView.goBack();
         } else {
