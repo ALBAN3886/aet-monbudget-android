@@ -120,6 +120,7 @@ public class MainActivity extends AppCompatActivity {
     private ImageButton updateDismiss;
     private String pendingApkUrl;
     private long updateDownloadId = -1;
+    private volatile String latestUpdateTag = null;
     private final BroadcastReceiver downloadReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -149,6 +150,7 @@ public class MainActivity extends AppCompatActivity {
         updateDismiss.setOnClickListener(v -> updateBanner.setVisibility(View.GONE));
 
         Button checkUpdateBtn = findViewById(R.id.checkUpdateBtn);
+        checkUpdateBtn.setVisibility(View.GONE); // remplace par l'entree "Mises a jour" du menu du site
         checkUpdateBtn.setOnClickListener(v -> {
             Toast.makeText(this, "Vérification en cours…", Toast.LENGTH_SHORT).show();
             checkForUpdate(true);
@@ -203,6 +205,7 @@ public class MainActivity extends AppCompatActivity {
                 .build();
         googleSignInClient = GoogleSignIn.getClient(this, gso);
         webView.addJavascriptInterface(new GoogleAuthBridge(), "AndroidAuth");
+        webView.addJavascriptInterface(new UpdateBridge(), "AndroidUpdate");
 
         webView.setWebChromeClient(new WebChromeClient() {
             // Appelée quand la page web (getUserMedia) demande l'accès à la caméra/micro.
@@ -415,7 +418,11 @@ public class MainActivity extends AppCompatActivity {
 
                 final String finalApkUrl = apkUrl;
                 final String versionLabel = tagName;
-                runOnUiThread(() -> showUpdateBanner(versionLabel, finalApkUrl));
+                latestUpdateTag = versionLabel;
+                runOnUiThread(() -> {
+                    showUpdateBanner(versionLabel, finalApkUrl);
+                    notifyWebUpdate(versionLabel);
+                });
 
             } catch (Exception e) {
                 // Échec silencieux au démarrage ; message si vérification manuelle.
@@ -664,6 +671,43 @@ public class MainActivity extends AppCompatActivity {
                 });
             });
         }
+    }
+
+    /**
+     * Pont JavaScript <-> Java pour les mises a jour (entree "Mises a jour" du menu du site) :
+     *   window.AndroidUpdate.check()              -> lance la verification (toast + bandeau)
+     *   window.AndroidUpdate.getVersion()         -> version installee (ex. "1.0.96")
+     *   window.AndroidUpdate.getAvailableUpdate() -> "v1.0.N" si une mise a jour existe, sinon ""
+     * Quand une mise a jour est trouvee : window.onAetUpdateAvailable(tag) est appelee.
+     */
+    private class UpdateBridge {
+        @JavascriptInterface
+        public String getVersion() {
+            try {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public String getAvailableUpdate() {
+            return latestUpdateTag == null ? "" : latestUpdateTag;
+        }
+
+        @JavascriptInterface
+        public void check() {
+            runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                    "Vérification en cours…", Toast.LENGTH_SHORT).show());
+            checkForUpdate(true);
+        }
+    }
+
+    private void notifyWebUpdate(String tag) {
+        if (webView == null) return;
+        String safe = tag == null ? "" : tag.replaceAll("[^0-9A-Za-z._-]", "");
+        webView.evaluateJavascript("window.__AET_UPDATE_TAG__='" + safe + "';"
+                + "if(typeof window.onAetUpdateAvailable==='function')window.onAetUpdateAvailable('" + safe + "');", null);
     }
 
     private void notifyGoogleSignIn(boolean success, String idTokenOrMessage) {
