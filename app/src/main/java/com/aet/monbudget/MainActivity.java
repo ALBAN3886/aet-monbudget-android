@@ -290,7 +290,7 @@ public class MainActivity extends AppCompatActivity {
                 Uri uri = request.getUrl();
                 String host = uri.getHost();
                 // Marketplace : fenetre posee par-dessus, MonBudget reste charge dessous.
-                if (host != null && host.equals("market.aet-alban.online")) {
+                if (isOverlayUrl(uri)) {
                     openMarket(uri.toString());
                     return true;
                 }
@@ -622,6 +622,17 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView marketView;
 
+    /** Pages ouvertes par-dessus MonBudget : Marketplace et caisse employes (employe.html). */
+    private boolean isOverlayUrl(Uri u) {
+        if (u == null) return false;
+        String h = u.getHost();
+        if (h == null) return false;
+        if (h.equals("market.aet-alban.online")) return true;
+        String path = u.getPath();
+        boolean ourHost = h.equals("aet-alban.online") || h.endsWith(".aet-alban.online") || h.equals("alban3886.github.io");
+        return ourHost && path != null && path.endsWith("/employe.html");
+    }
+
     /** Ouvre Marketplace dans une WebView posee par-dessus MonBudget (sans passerelles JS). */
     private void openMarket(String url) {
         if (marketView != null) { marketView.loadUrl(url); return; }
@@ -641,7 +652,7 @@ public class MainActivity extends AppCompatActivity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri u = request.getUrl();
                 String h = u.getHost();
-                if (h != null && h.equals("market.aet-alban.online")) return false;
+                if (isOverlayUrl(u)) return false;
                 if (h != null && (h.equals("aet-alban.online") || h.endsWith(".aet-alban.online"))) {
                     view.post(() -> closeMarket());
                     return true;
